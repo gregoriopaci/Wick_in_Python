@@ -7,6 +7,7 @@ two-point function.
 
 import sympy as sp
 import pytest
+from functools import partial
 
 from wick_theorem import (
     Derivative,
@@ -18,6 +19,7 @@ from wick_theorem import (
     multiply_operators,
     make_Tnn_DD,
     make_Tnn_NN,
+    Operator,
 )
 
 
@@ -30,23 +32,21 @@ p = 3
 
 x1, x2, x3, z = sp.symbols("x1 x2 x3 z", real=True)
 y1, y2, y3, w = sp.symbols("y1 y2 y3 w", real=True)
+u1, u2, u3, v = sp.symbols("u1 u2 u3 v", real=True)
 
-# Tangential and normal coordinates of the two insertion points.
+# Tangential and normal coordinates of the insertion points.
 coordinates = {
     "x": ((x1, x2, x3), z),
     "y": ((y1, y2, y3), w),
+    "u": ((u1, u2, u3), v),
 }
+
 
 m = sp.symbols("m", positive=True)
 
 
-def G_phiphi(
-    x_t: tuple[sp.Symbol, ...],
-    x_n: sp.Symbol,
-    y_t: tuple[sp.Symbol, ...],
-    y_n: sp.Symbol,
-) -> sp.Expr:
-    """Return the propagator <phi(x) phi(y)>.
+def G_phiphi(x_t, x_n, y_t, y_n, bc="DD"):
+    """Return  <phi(x) phi(y)> for DD or NN boundary conditions.
 
     The propagator is expressed as the difference between the direct
     contribution and the image contribution.
@@ -67,11 +67,18 @@ def G_phiphi(
     direct = r2 + (x_n - y_n) ** 2
     image = r2 + (x_n + y_n) ** 2
 
-    return (-sp.log(m**2 * direct) + sp.log(m**2 * image)) / (16 * sp.pi**2)
+    if bc == "DD":
+        sign = 1
+    elif bc == "NN":
+        sign = -1
+    else:
+        raise ValueError("Boundary condition must be 'DD' or 'NN'")
+
+    return (-sp.log(m**2 * direct) + sign * sp.log(m**2 * image)) / (16 * sp.pi**2)
 
 
-def G_psiphi(x_t, x_n, y_t, y_n):
-    """Return the propagator <psi(x) phi(y)>.
+def G_psiphi(x_t, x_n, y_t, y_n, bc="DD"):
+    """Return  <psi(x) phi(y)> for DD or NN boundary conditions.
 
     The propagator is given by the difference between the inverse
     squared distances of the direct and image contributions.
@@ -92,13 +99,26 @@ def G_psiphi(x_t, x_n, y_t, y_n):
     direct = r2 + (x_n - y_n) ** 2
     image = r2 + (x_n + y_n) ** 2
 
-    return (-1 / direct + 1 / image) / (4 * sp.pi**2)
+    if bc == "DD":
+        sign = 1
+    elif bc == "NN":
+        sign = -1
+    else:
+        raise ValueError("Boundary condition must be 'DD' or 'NN'")
+
+    return (-1 / direct + sign / image) / (4 * sp.pi**2)
 
 
 # Map each ordered pair of field species to its propagator.
-propagators = {
-    ("phi", "phi"): G_phiphi,
-    ("psi", "phi"): G_psiphi,
+# We use partial to avoid defining completely different functions for the propators with different BCs.
+propagators_DD = {
+    ("phi", "phi"): partial(G_phiphi, bc="DD"),
+    ("psi", "phi"): partial(G_psiphi, bc="DD"),
+}
+
+propagators_NN = {
+    ("phi", "phi"): partial(G_phiphi, bc="NN"),
+    ("psi", "phi"): partial(G_psiphi, bc="NN"),
 }
 
 # An optional alternative definition with an explicit psi-psi propagator:
@@ -125,7 +145,7 @@ def test_phi_phi_propagator():
         Field("phi", "x"),
         Field("phi", "y"),
         coordinates,
-        propagators,
+        propagators_DD,
     )
 
     expected = G_phiphi(*coordinates["x"], *coordinates["y"])
@@ -139,7 +159,7 @@ def test_psi_phi_propagator():
         Field("psi", "x"),
         Field("phi", "y"),
         coordinates,
-        propagators,
+        propagators_DD,
     )
     # Evaluate the expected propagator directly.
     expected = G_psiphi(*coordinates["x"], *coordinates["y"])
@@ -157,7 +177,7 @@ def test_reverse_propagator_order():
         Field("phi", "x"),
         Field("psi", "y"),
         coordinates,
-        propagators,
+        propagators_DD,
     )
 
     expected = G_psiphi(*coordinates["y"], *coordinates["x"])
@@ -176,7 +196,7 @@ def test_normal_derivatives():
         Field("phi", "x", (Derivative("normal"),)),
         Field("phi", "y", (Derivative("normal"),)),
         coordinates,
-        propagators,
+        propagators_DD,
     )
 
     G = G_phiphi(*coordinates["x"], *coordinates["y"])
@@ -203,7 +223,7 @@ def test_tangential_derivatives():
             (Derivative("tangential", 0),),
         ),
         coordinates,
-        propagators,
+        propagators_DD,
     )
 
     # Compare with direct differentiation with respect to x1 and y1.
@@ -235,7 +255,7 @@ def test_mixed_derivatives():
             (Derivative("normal"),),
         ),
         coordinates,
-        propagators,
+        propagators_DD,
     )
 
     G = G_phiphi(*coordinates["x"], *coordinates["y"])
@@ -255,7 +275,7 @@ def test_same_point_contraction_is_zero():
         Field("phi", "x"),
         Field("phi", "x"),
         coordinates,
-        propagators,
+        propagators_DD,
     )
 
     assert result == 0
@@ -267,7 +287,7 @@ def test_psi_psi_contraction_is_zero():
         Field("psi", "x"),
         Field("psi", "y"),
         coordinates,
-        propagators,
+        propagators_DD,
     )
 
     assert result == 0
@@ -310,12 +330,13 @@ def test_DD_differentiated_monomial_pair():
     term_y = T_y.terms[1]
 
     # Construct the product of the selected monomials.
+    # I could also use multiply_operators(term_x, term_y) but I would need to extract the Monomial..
     product_term = Monomial(
         coefficient=term_x.coefficient * term_y.coefficient,
         fields=term_x.fields + term_y.fields,
     )
     # Enumerate all complete pairings for diagnostic purposes.
-    pairings = wick_pairings(product_term.fields, coordinates, propagators)
+    pairings = wick_pairings(product_term.fields, coordinates, propagators_DD)
 
     print("Numero di contrazioni:", len(pairings))
 
@@ -324,7 +345,7 @@ def test_DD_differentiated_monomial_pair():
         sp.pprint(value)
 
     # Evaluate the complete Wick contraction.
-    result = wick_contraction(product_term, coordinates, propagators)
+    result = wick_contraction(product_term, coordinates, propagators_DD)
 
     # Expected result from the differentiated phi-phi propagator.
     G = G_phiphi(*coordinates["x"], *coordinates["y"])
@@ -338,7 +359,7 @@ def test_DD_differentiated_monomial_pair():
 def calculate_DD_boundary_2pt():
     """Calculate the DD boundary two-point function.
 
-    Construct T_nn at two insertion points, multiply the operators,
+    Construct T_nn at two insertion points with DD BCs, multiply the operators,
     evaluate all complete Wick contractions, and restrict the result
     to the boundary.
 
@@ -370,7 +391,7 @@ def calculate_DD_boundary_2pt():
     result = sp.Integer(0)
 
     for term in product.terms:
-        contribution = wick_contraction(term, coordinates, propagators)
+        contribution = wick_contraction(term, coordinates, propagators_DD)
         result += contribution.subs(boundary_subs)
 
     return r, sp.factor(sp.cancel(sp.together(result)))
@@ -387,7 +408,7 @@ def test_DD_boundary_two_point():
     """
     r, correlator = calculate_DD_boundary_2pt()
 
-    print("Correlatore DD:")
+    print("Two-point function of the displament operator with DD BCs:")
     sp.pprint(correlator)
 
     # Extract the coefficient of the r^(-8) dependence.
@@ -404,3 +425,218 @@ def test_DD_boundary_two_point():
 
     # Check the corresponding value of b1.
     assert sp.simplify(b1 + sp.Rational(8, 15)) == 0
+
+
+def calculate_NN_boundary_2pt():
+    """Calculate the NN boundary two-point function.
+
+    Construct T_nn at two insertion points with NN BCs, multiply the operators,
+    evaluate all complete Wick contractions, and restrict the result
+    to the boundary.
+
+    The insertion points are separated by a distance r along the first
+    tangential direction.
+
+    Returns:
+        tuple: The tangential separation r and the simplified correlator.
+    """
+    T_x = make_Tnn_NN("x", p)
+    T_y = make_Tnn_NN("y", p)
+
+    # Construct the product T_nn(x) T_nn(y).
+    product = multiply_operators(T_x, T_y)
+
+    r = sp.symbols("r", positive=True)
+
+    boundary_subs = {
+        z: 0,
+        w: 0,
+        x1: r,
+        x2: 0,
+        x3: 0,
+        y1: 0,
+        y2: 0,
+        y3: 0,
+    }
+
+    result = sp.Integer(0)
+
+    # for i, term in enumerate(product.terms):
+    #     print(f"Term {i}:")
+    #     print("Coefficient:", term.coefficient)
+
+    #     contribution = wick_contraction(term, coordinates, propagators)
+
+    #     print("Before boundary substitution:")
+    #     sp.pprint(contribution)
+
+    #     print("After boundary substitution:")
+    #     sp.pprint(contribution.subs(boundary_subs))
+
+    for term in product.terms:
+        contribution = wick_contraction(term, coordinates, propagators_NN)
+        result += contribution.subs(boundary_subs)
+
+    return r, sp.factor(sp.cancel(sp.together(result)))
+
+
+def test_NN_boundary_two_point():
+    """Check the NN displacement-operator two-point function.
+
+    Conformal invariance requires the boundary two-point function to
+    scale as r^(-8) in this setup.
+
+    The test checks the expected coefficient and extracts the
+    corresponding value of b1 using the convention adopted here.
+    """
+    r, correlator = calculate_NN_boundary_2pt()
+
+    print("Two-point function of the displament operator with NN BCs:")
+    sp.pprint(correlator)
+
+    # Extract the coefficient of the r^(-8) dependence.
+    C_D = sp.factor(r**8 * correlator)
+
+    # Extract b1 using the normalization convention of this calculation.
+    b1 = sp.simplify(sp.Rational(2, 15) * sp.pi**4 * C_D)
+
+    print("C_D =", C_D)
+    print("b1 =", b1)
+
+    # Check the expected DD two-point function.
+    assert sp.simplify(correlator + 4 / (sp.pi**4 * r**8)) == 0
+
+    # Check the corresponding value of b1.
+    assert sp.simplify(b1 + sp.Rational(8, 15)) == 0
+
+
+def calculate_DD_boundary_3pt():
+    """Calculate the DD displacement-operator three-point function."""
+    T_x = make_Tnn_DD("x", p)
+    T_y = make_Tnn_DD("y", p)
+    T_u = make_Tnn_DD("u", p)
+
+    product_xy = multiply_operators(T_x, T_y)
+    product_xyz = multiply_operators(product_xy, T_u)
+
+    r, s, theta = sp.symbols("r s theta", positive=True)
+
+    boundary_subs = {
+        z: 0,
+        w: 0,
+        v: 0,
+        x1: r,
+        x2: 0,
+        x3: 0,
+        y1: s * sp.cos(theta),
+        y2: s * sp.sin(theta),
+        y3: 0,
+        u1: 0,
+        u2: 0,
+        u3: 0,
+    }
+
+    result = sp.Integer(0)
+
+    for term in product_xyz.terms:
+        contribution = wick_contraction(term, coordinates, propagators_DD)
+        result += contribution.subs(boundary_subs)
+
+    return r, s, theta, sp.factor(sp.cancel(sp.together(result)))
+
+
+def test_DD_boundary_three_point():
+    """Check the DD displacement-operator three-point function."""
+
+    r, s, theta, correlator = calculate_DD_boundary_3pt()
+
+    distance_squared = r**2 + s**2 - 2 * r * s * sp.cos(theta)
+
+    # Extract the coefficient of the conformal three-point structure.
+    C_DDD = sp.trigsimp(
+        sp.factor(
+            sp.cancel(sp.together(correlator * r**4 * s**4 * distance_squared**2))
+        )
+    )
+
+    # Expected coefficient and associated boundary charge.
+    C_DDD_expected = -sp.Rational(52, 9) / sp.pi**6
+    c_expected = -sp.Rational(104, 315)
+
+    print("Three-point function with DD BCs:")
+    sp.pprint(correlator)
+
+    print("C_DDD =", C_DDD)
+    print("c =", c_expected)
+
+    # Check the three-point coefficient.
+    assert sp.simplify(C_DDD - C_DDD_expected) == 0
+
+    # Check the associated boundary charge.
+    assert sp.simplify(c_expected + sp.Rational(104, 315)) == 0
+
+
+def calculate_NN_boundary_3pt():
+    """Calculate the NN displacement-operator three-point function."""
+
+    T_x = make_Tnn_NN("x", p)
+    T_y = make_Tnn_NN("y", p)
+    T_u = make_Tnn_NN("u", p)
+
+    product_xy = multiply_operators(T_x, T_y)
+    product_xyz = multiply_operators(product_xy, T_u)
+
+    r, s, theta = sp.symbols("r s theta", positive=True)
+
+    boundary_subs = {
+        z: 0,
+        w: 0,
+        v: 0,
+        x1: r,
+        x2: 0,
+        x3: 0,
+        y1: s * sp.cos(theta),
+        y2: s * sp.sin(theta),
+        y3: 0,
+        u1: 0,
+        u2: 0,
+        u3: 0,
+    }
+
+    result = sp.Integer(0)
+
+    for term in product_xyz.terms:
+        contribution = wick_contraction(term, coordinates, propagators_NN)
+        result += contribution.subs(boundary_subs)
+
+    return r, s, theta, sp.factor(sp.cancel(sp.together(result)))
+
+
+def test_NN_boundary_three_point():
+    """Check the NN displacement-operator three-point function."""
+
+    r, s, theta, correlator = calculate_NN_boundary_3pt()
+
+    distance_squared = r**2 + s**2 - 2 * r * s * sp.cos(theta)
+
+    # Extract the coefficient of the conformal three-point structure.
+    C_DDD = sp.trigsimp(
+        sp.factor(
+            sp.cancel(sp.together(correlator * r**4 * s**4 * distance_squared**2))
+        )
+    )
+
+    C_DDD_expected = -sp.Rational(52, 9) / sp.pi**6
+    c_expected = -sp.Rational(104, 315)
+
+    print("Three-point function with NN BCs:")
+    sp.pprint(correlator)
+
+    print("C_DDD =", C_DDD)
+    print("c =", c_expected)
+
+    # Check the three-point coefficient.
+    assert sp.simplify(C_DDD - C_DDD_expected) == 0
+
+    # Check the associated boundary charge.
+    assert sp.simplify(c_expected + sp.Rational(104, 315)) == 0
